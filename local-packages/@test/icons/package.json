@@ -1,0 +1,7 @@
+{
+  "name": "@test/icons",
+  "version": "1.0.0",
+  "description": "Test Icons",
+  "main": "index.js",
+  "module": "index.js"
+} 

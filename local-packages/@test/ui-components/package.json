@@ -1,0 +1,8 @@
+{
+  "name": "@test/ui-components",
+  "version": "1.0.0",
+  "description": "Test UI Components",
+  "main": "index.js",
+  "module": "index.js",
+  "types": "index.d.ts"
+} 
