@@ -8,5 +8,9 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   minify: false,
-  external: ['vite', 'chokidar', 'fast-glob']
+  external: ['vite', 'chokidar', 'fast-glob'],
+  // 保持中文字符，不转换成Unicode编码
+  esbuildOptions(options) {
+    options.charset = 'utf8'
+  }
 }); 
