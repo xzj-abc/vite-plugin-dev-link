@@ -1,0 +1,18 @@
+{
+  "globalLocalPath": "../local-packages",
+  "autoScan": true,
+  "links": [
+    {
+      "package": ["@test/ui-components", "@test/icons"],
+      "entryFile": "index.js"
+    }
+  ],
+  "globalExclude": [
+    "**/*.test.js",
+    "**/*.test.ts",
+    "**/*.spec.js", 
+    "**/*.spec.ts",
+    "**/node_modules/**",
+    "**/.git/**"
+  ]
+} 

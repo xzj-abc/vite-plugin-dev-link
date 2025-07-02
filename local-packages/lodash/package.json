@@ -1,6 +1,0 @@
-{
-  "name": "lodash",
-  "version": "4.17.21",
-  "description": "Local lodash for testing",
-  "main": "index.js"
-} 

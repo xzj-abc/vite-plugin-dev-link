@@ -1,7 +1,7 @@
 {
   "name": "vite-plugin-dev-link",
-  "version": "1.0.0",
-  "description": "A Vite plugin for linking local components during development",
+  "version": "0.1.1-alpha.2",
+  "description": "A powerful Vite plugin for linking local packages during development with HMR support, auto-scan, and smart path resolution",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -20,7 +20,12 @@
     "plugin",
     "development",
     "link",
-    "local"
+    "local",
+    "hmr",
+    "hot-reload",
+    "auto-scan",
+    "packages",
+    "monorepo"
   ],
   "author": "",
   "license": "MIT",

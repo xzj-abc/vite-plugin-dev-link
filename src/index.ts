@@ -1,6 +1,6 @@
-import { Plugin, ResolvedConfig } from 'vite';
+import { Plugin, ResolvedConfig, ViteDevServer } from 'vite';
 import { readFileSync, existsSync, statSync } from 'fs';
-import { resolve, join, relative, dirname } from 'path';
+import { resolve, join, relative, dirname, isAbsolute } from 'path';
 import { watch } from 'chokidar';
 import glob from 'fast-glob';
 
@@ -18,10 +18,10 @@ export interface LinkMapping {
   package: string | string[];
   // 本地源代码路径（可选，如果未指定则使用全局localPath）
   localPath?: string;
-  // 要替换的文件或目录（相对于包根目录）
-  files?: string[];
   // 排除的文件模式
   exclude?: string[];
+  // 指定包的入口文件（支持相对路径和绝对路径，相对路径相对于 localPath）
+  entryFile?: string;
 }
 
 export interface DevLinkConfigFile {
@@ -33,6 +33,8 @@ export interface DevLinkConfigFile {
   globalExclude?: string[];
   // 是否自动扫描本地目录下的package.json
   autoScan?: boolean;
+  // 全局默认入口文件（支持相对路径和绝对路径，相对路径相对于对应包的 localPath）
+  globalEntryFile?: string;
 }
 
 function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
@@ -44,7 +46,11 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
 
   let config: ResolvedConfig;
   let linkConfig: DevLinkConfigFile | null = null;
+  let configFileDir: string = '';
   let watchers: ReturnType<typeof watch>[] = [];
+  let server: ViteDevServer | null = null;
+  // 文件路径到模块ID的映射，用于HMR
+  let fileToModuleMap: Map<string, Set<string>> = new Map();
 
   const log = (message: string, type: 'info' | 'warn' | 'error' = 'info') => {
     if (verbose || type !== 'info') {
@@ -54,7 +60,8 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
   };
 
   const loadConfig = (): DevLinkConfigFile | null => {
-    const configPath = resolve(process.cwd(), configFile);
+    // 如果 configFile 是绝对路径，直接使用；否则相对于当前工作目录解析
+    const configPath = isAbsolute(configFile) ? configFile : resolve(process.cwd(), configFile);
     
     if (!existsSync(configPath)) {
       log(`配置文件不存在: ${configPath}`, 'warn');
@@ -64,6 +71,8 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
     try {
       const content = readFileSync(configPath, 'utf-8');
       const parsed = JSON.parse(content) as DevLinkConfigFile;
+      // 保存配置文件所在的目录
+      configFileDir = dirname(configPath);
       log(`已加载配置文件: ${configPath}`);
       return parsed;
     } catch (error) {
@@ -73,27 +82,14 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
   };
 
   const resolveLocalPath = (localPath: string): string => {
-    if (localPath.startsWith('/')) {
+    if (isAbsolute(localPath)) {
       return localPath;
     }
-    return resolve(process.cwd(), localPath);
+    // 相对路径相对于配置文件所在目录解析
+    return resolve(configFileDir || process.cwd(), localPath);
   };
 
-  const findPackagePath = (packageName: string): string | null => {
-    try {
-      const packagePath = require.resolve(`${packageName}/package.json`, {
-        paths: [process.cwd()]
-      });
-      return dirname(packagePath);
-    } catch {
-      // 尝试在 node_modules 中查找
-      const nodeModulesPath = join(process.cwd(), 'node_modules', packageName);
-      if (existsSync(nodeModulesPath)) {
-        return nodeModulesPath;
-      }
-      return null;
-    }
-  };
+
 
   const scanLocalPackages = (localPath: string): { [packageName: string]: string } => {
     const packages: { [packageName: string]: string } = {};
@@ -103,8 +99,11 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
     }
 
     try {
-      // 扫描 localPath 下的所有子目录
-      const entries = glob.sync('*/package.json', {
+      // 扫描 localPath 下的所有子目录，支持作用域包（最多两层结构）
+      const entries = glob.sync([
+        '*/package.json',        // 普通包: package-name/package.json
+        '*/*/package.json'       // 作用域包: @scope/package-name/package.json
+      ], {
         cwd: localPath,
         absolute: false
       });
@@ -129,6 +128,13 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
     return packages;
   };
 
+  const addFileToModuleMapping = (filePath: string, moduleId: string) => {
+    if (!fileToModuleMap.has(filePath)) {
+      fileToModuleMap.set(filePath, new Set());
+    }
+    fileToModuleMap.get(filePath)!.add(moduleId);
+  };
+
   const resolvePackageLocalPath = (mapping: LinkMapping, scannedPackages: { [key: string]: string }): { [packageName: string]: string } => {
     const result: { [packageName: string]: string } = {};
     const packages = Array.isArray(mapping.package) ? mapping.package : [mapping.package];
@@ -149,7 +155,7 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
           localPath = resolveLocalPath(linkConfig.globalLocalPath);
         }
       } else {
-        log(`包 ${packageName} 没有配置 localPath，且没有全局 localPath`, 'warn');
+        log(`包 "${packageName}" 没有配置 localPath，且没有全局 globalLocalPath，请检查配置`, 'warn');
         return;
       }
       
@@ -159,61 +165,16 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
     return result;
   };
 
-  const getFilesToLink = (mapping: LinkMapping): string[] => {
-    if (!mapping.localPath) {
-      log(`映射缺少 localPath 配置`, 'warn');
-      return [];
-    }
-    
-    const localPath = resolveLocalPath(mapping.localPath);
-    
-    if (!existsSync(localPath)) {
-      log(`本地路径不存在: ${localPath}`, 'warn');
-      return [];
-    }
 
-    const isDirectory = statSync(localPath).isDirectory();
-    
-    if (!isDirectory) {
-      return [localPath];
-    }
-
-    // 如果指定了具体文件，只链接这些文件
-    if (mapping.files && mapping.files.length > 0) {
-      return mapping.files
-        .map(file => join(localPath, file))
-        .filter(existsSync);
-    }
-
-    // 否则获取目录下所有文件
-    const patterns = ['**/*'];
-    const ignore = [
-      'node_modules/**',
-      '.git/**',
-      '**/*.log',
-      ...(mapping.exclude || []),
-      ...(linkConfig?.globalExclude || [])
-    ];
-
-    try {
-      const files = glob.sync(patterns, {
-        cwd: localPath,
-        ignore,
-        absolute: true,
-        onlyFiles: true
-      });
-      
-      return files;
-    } catch (error) {
-      log(`获取文件列表失败: ${error}`, 'error');
-      return [];
-    }
-  };
 
   return {
     name: 'vite-plugin-dev-link',
     configResolved(resolvedConfig) {
       config = resolvedConfig;
+    },
+
+    configureServer(srv) {
+      server = srv;
     },
 
     buildStart() {
@@ -245,13 +206,13 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
         const packageLocalPaths = resolvePackageLocalPath(mapping, scannedPackages);
         
         Object.entries(packageLocalPaths).forEach(([packageName, localPath]) => {
-          const packagePath = findPackagePath(packageName);
-          if (!packagePath) {
-            log(`找不到包: ${packageName}`, 'warn');
+          // 检查本地路径是否存在
+          if (!existsSync(localPath)) {
+            log(`包 "${packageName}" 的本地路径不存在: ${relative(process.cwd(), localPath)}`, 'warn');
             return;
           }
 
-          log(`链接: ${packageName} -> ${relative(process.cwd(), localPath)}`);
+          log(`成功链接包: ${packageName} -> ${relative(process.cwd(), localPath)}`);
 
           // 监听本地文件变化
           const watcher = watch(localPath, {
@@ -269,6 +230,34 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
           watcher.on('all', (event, filePath) => {
             if (verbose) {
               log(`文件变化 [${event}]: ${relative(process.cwd(), filePath)}`);
+            }
+            
+            // 触发HMR更新
+            if (server && (event === 'change' || event === 'add' || event === 'unlink')) {
+              const affectedModules = fileToModuleMap.get(filePath);
+              if (affectedModules && affectedModules.size > 0) {
+                log(`🔥 HMR更新: ${relative(process.cwd(), filePath)} -> ${Array.from(affectedModules).join(', ')}`);
+                affectedModules.forEach(moduleId => {
+                  const module = server!.moduleGraph.getModuleById(moduleId);
+                  if (module) {
+                    server!.reloadModule(module);
+                  }
+                });
+              } else {
+                // 如果没有找到对应的模块，尝试通过文件路径直接查找
+                const module = server.moduleGraph.getModuleById(filePath);
+                if (module) {
+                  log(`🔥 HMR更新: ${relative(process.cwd(), filePath)} (直接匹配)`);
+                  server.reloadModule(module);
+                } else {
+                  // 作为后备方案，查找所有可能相关的模块
+                  const modules = server.moduleGraph.fileToModulesMap.get(filePath);
+                  if (modules && modules.size > 0) {
+                    log(`🔥 HMR更新: ${relative(process.cwd(), filePath)} (通过fileToModulesMap)`);
+                    modules.forEach(mod => server!.reloadModule(mod));
+                  }
+                }
+              }
             }
           });
 
@@ -297,15 +286,47 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
           if (id === packageName || id.startsWith(`${packageName}/`)) {
             if (id === packageName) {
               // 直接导入包
+              
+              // 优先使用配置的 entryFile
+              if (mapping.entryFile) {
+                const entryPath = isAbsolute(mapping.entryFile) 
+                  ? mapping.entryFile 
+                  : join(localPath, mapping.entryFile);
+                if (existsSync(entryPath)) {
+                  log(`解析 ${id} -> ${relative(process.cwd(), entryPath)} (使用配置的 entryFile)`);
+                  addFileToModuleMapping(entryPath, id);
+                  return entryPath;
+                } else {
+                  log(`包 "${packageName}" 的 entryFile 不存在: ${relative(process.cwd(), entryPath)} (localPath: ${relative(process.cwd(), localPath)})`, 'warn');
+                }
+              }
+              
+              // 尝试使用全局 entryFile
+              if (linkConfig.globalEntryFile) {
+                const globalEntryPath = isAbsolute(linkConfig.globalEntryFile)
+                  ? linkConfig.globalEntryFile
+                  : join(localPath, linkConfig.globalEntryFile);
+                if (existsSync(globalEntryPath)) {
+                  log(`解析 ${id} -> ${relative(process.cwd(), globalEntryPath)} (使用全局 entryFile)`);
+                  addFileToModuleMapping(globalEntryPath, id);
+                  return globalEntryPath;
+                } else {
+                  log(`包 "${packageName}" 的全局 entryFile 不存在: ${relative(process.cwd(), globalEntryPath)} (localPath: ${relative(process.cwd(), localPath)})`, 'warn');
+                }
+              }
+              
+              // 回退到默认行为
               const indexFile = join(localPath, 'index.js');
               const indexTs = join(localPath, 'index.ts');
               const packageJson = join(localPath, 'package.json');
               
               if (existsSync(indexTs)) {
-                log(`解析 ${id} -> ${relative(process.cwd(), indexTs)}`);
+                log(`解析 ${id} -> ${relative(process.cwd(), indexTs)} (默认 index.ts)`);
+                addFileToModuleMapping(indexTs, id);
                 return indexTs;
               } else if (existsSync(indexFile)) {
-                log(`解析 ${id} -> ${relative(process.cwd(), indexFile)}`);
+                log(`解析 ${id} -> ${relative(process.cwd(), indexFile)} (默认 index.js)`);
+                addFileToModuleMapping(indexFile, id);
                 return indexFile;
               } else if (existsSync(packageJson)) {
                 try {
@@ -313,12 +334,17 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
                   const main = pkg.main || pkg.module || 'index.js';
                   const mainPath = join(localPath, main);
                   if (existsSync(mainPath)) {
-                    log(`解析 ${id} -> ${relative(process.cwd(), mainPath)}`);
+                    log(`解析 ${id} -> ${relative(process.cwd(), mainPath)} (从 package.json)`);
+                    addFileToModuleMapping(mainPath, id);
                     return mainPath;
+                  } else {
+                    log(`包 "${packageName}" 的 package.json 中指定的入口文件不存在: ${relative(process.cwd(), mainPath)}`, 'warn');
                   }
                 } catch (error) {
-                  log(`读取 package.json 失败: ${error}`, 'error');
+                  log(`包 "${packageName}" 的 package.json 读取失败: ${error}`, 'error');
                 }
+              } else {
+                log(`包 "${packageName}" 找不到可用的入口文件 (检查了 index.ts, index.js, package.json)，localPath: ${relative(process.cwd(), localPath)}`, 'warn');
               }
             } else {
               // 导入包的子路径
@@ -330,14 +356,18 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
               for (const ext of extensions) {
                 const fileWithExt = targetPath + ext;
                 if (existsSync(fileWithExt)) {
-                  log(`解析 ${id} -> ${relative(process.cwd(), fileWithExt)}`);
+                  log(`解析 ${id} -> ${relative(process.cwd(), fileWithExt)} (子路径)`);
+                  addFileToModuleMapping(fileWithExt, id);
                   return fileWithExt;
                 }
               }
               
               if (existsSync(targetPath)) {
-                log(`解析 ${id} -> ${relative(process.cwd(), targetPath)}`);
+                log(`解析 ${id} -> ${relative(process.cwd(), targetPath)} (子路径)`);
+                addFileToModuleMapping(targetPath, id);
                 return targetPath;
+              } else {
+                log(`包 "${packageName}" 的子路径不存在: ${id} -> ${relative(process.cwd(), targetPath)}`, 'warn');
               }
             }
           }
@@ -347,12 +377,41 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
       return null;
     },
 
+    handleHotUpdate(ctx) {
+      // 检查文件是否是被链接的本地包文件
+      const filePath = ctx.file;
+      const affectedModules = fileToModuleMap.get(filePath);
+      
+      if (affectedModules && affectedModules.size > 0) {
+        log(`🔥 HMR处理: ${relative(process.cwd(), filePath)} -> ${Array.from(affectedModules).join(', ')}`);
+        
+        // 返回需要更新的模块
+        const modules = [];
+        for (const moduleId of affectedModules) {
+          const module = ctx.server.moduleGraph.getModuleById(moduleId);
+          if (module) {
+            modules.push(module);
+          }
+        }
+        
+        if (modules.length > 0) {
+          return modules;
+        }
+      }
+      
+      // 如果没有找到映射，让Vite处理默认的HMR逻辑
+      return undefined;
+    },
+
     buildEnd() {
       // 清理监听器
       watchers.forEach(watcher => {
         watcher.close();
       });
       watchers = [];
+      // 清理文件映射
+      fileToModuleMap.clear();
+      server = null;
     }
   };
 }
