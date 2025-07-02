@@ -105,11 +105,89 @@ export default defineConfig({
 
 ### 3. 启动开发服务器
 
-使用环境变量启用 dev-link 功能：
+**重要**：使用传统配置文件模式时，必须设置环境变量启用 dev-link 功能：
 
 ```bash
 DEV_LINK=true npm run dev
 ```
+
+⚠️ **常见问题**：如果看到"成功链接包"提示但没有效果，请检查是否设置了 `DEV_LINK=true` 环境变量。
+
+💡 **建议**：推荐使用简化配置模式（preset、autoLink、packages），无需环境变量即可使用。
+
+## 🔧 故障排除
+
+### 常见问题：显示"成功链接包"但没有效果
+
+**症状**：控制台显示"成功链接包"或类似消息，但实际导入时仍然使用 node_modules 中的包。
+
+**可能原因**：
+
+1. 使用传统配置文件（dev-link.json）时未设置环境变量
+2. 导入的包名与配置中的包名不匹配
+3. 本地包路径不正确
+
+**解决方案**：
+
+**第一步：启用调试模式**
+
+```typescript
+vitePluginDevLink({
+    preset: "local-dev",
+    debug: true, // 🔧 启用调试模式
+});
+```
+
+**第二步：查看调试信息**
+启用调试模式后，控制台会显示详细的模块解析过程：
+
+```
+🔍 [vite-plugin-dev-link] 尝试解析模块: @my/ui-components
+🔍 [vite-plugin-dev-link] 当前可用的包映射:
+🔍 [vite-plugin-dev-link]   - @my/ui-components -> local-packages/@my/ui-components
+🔍 [vite-plugin-dev-link] 检查包名匹配: "@my/ui-components" vs "@my/ui-components"
+🔗 [vite-plugin-dev-link] 解析 @my/ui-components -> local-packages/@my/ui-components/index.js
+```
+
+**第三步：根据调试信息排查问题**
+
+1. **如果没有看到"尝试解析模块"日志**
+
+    - 问题：resolveId 钩子没有被调用
+    - 解决：检查是否正确配置了插件，确保在 vite.config.ts 中正确引入
+
+2. **如果看到"尝试解析模块"但没有包映射**
+
+    - 问题：配置文件没有加载或本地包扫描失败
+    - 解决：检查配置文件路径和本地包目录是否存在
+
+3. **如果包映射存在但"未找到匹配的包"**
+
+    - 问题：导入的包名与配置不匹配
+    - 解决：确保 `import xxx from '@my/package'` 中的包名与配置中的包名完全一致
+
+4. **如果使用传统配置文件模式**
+
+    ```bash
+    DEV_LINK=true npm run dev
+    ```
+
+5. **推荐：改用简化配置**
+    ```typescript
+    // vite.config.ts
+    export default defineConfig({
+        plugins: [
+            vitePluginDevLink({ preset: "local-dev" }), // 无需环境变量
+        ],
+    });
+    ```
+
+### 其他常见问题
+
+-   **问题**：找不到本地包
+    -   **解决**：检查 `globalLocalPath` 路径是否正确，确保包含 package.json 文件
+-   **问题**：HMR 不工作
+    -   **解决**：确保本地包文件在 Vite 的监听范围内，检查 `exclude` 配置
 
 ## ⚙️ 配置选项
 
@@ -125,11 +203,12 @@ DEV_LINK=true npm run dev
 
 #### 🔧 通用选项
 
-| 选项         | 类型      | 默认值            | 描述             |
-| ------------ | --------- | ----------------- | ---------------- |
-| `configFile` | `string`  | `'dev-link.json'` | 配置文件路径     |
-| `enabled`    | `boolean` | `true`            | 是否启用插件     |
-| `verbose`    | `boolean` | `false`           | 是否显示详细日志 |
+| 选项         | 类型      | 默认值            | 描述                          |
+| ------------ | --------- | ----------------- | ----------------------------- |
+| `configFile` | `string`  | `'dev-link.json'` | 配置文件路径                  |
+| `enabled`    | `boolean` | `true`            | 是否启用插件                  |
+| `verbose`    | `boolean` | `false`           | 是否显示详细日志              |
+| `debug`      | `boolean` | `false`           | 🔧 调试模式，显示模块解析过程 |
 
 #### 🎯 预设说明
 

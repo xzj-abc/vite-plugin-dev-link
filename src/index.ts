@@ -11,6 +11,8 @@ export interface DevLinkConfig {
   enabled?: boolean;
   // 是否显示详细日志
   verbose?: boolean;
+  // 🔧 调试模式：显示模块解析的详细过程
+  debug?: boolean;
   // 🎯 简化配置：零配置模式 - 自动扫描指定目录
   autoLink?: string | string[];
   // 🎯 简化配置：直接指定包映射
@@ -47,7 +49,8 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
   const {
     configFile = 'dev-link.json',
     enabled = true,
-    verbose = false
+    verbose = false,
+    debug = false
   } = options;
 
   let config: ResolvedConfig;
@@ -55,6 +58,7 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
   let configFileDir: string = '';
   let watchers: ReturnType<typeof watch>[] = [];
   let server: ViteDevServer | null = null;
+  let hasWarnedAboutEnvVar = false;
   
   // 🔥 改进的映射机制
   // 文件路径到模块ID的映射（支持多个模块ID）
@@ -66,9 +70,9 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
   // 包名到本地路径的映射
   let packageToPathMap: Map<string, string> = new Map();
 
-  const log = (message: string, type: 'info' | 'warn' | 'error' = 'info') => {
-    if (verbose || type !== 'info') {
-      const prefix = type === 'error' ? '❌' : type === 'warn' ? '⚠️' : '🔗';
+  const log = (message: string, type: 'info' | 'warn' | 'error' | 'debug' = 'info') => {
+    if (verbose || debug || type !== 'info') {
+      const prefix = type === 'error' ? '❌' : type === 'warn' ? '⚠️' : type === 'debug' ? '🔍' : '🔗';
       console.log(`${prefix} [vite-plugin-dev-link] ${message}`);
     }
   };
@@ -402,6 +406,11 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
       // 🎯 简化配置模式下不需要环境变量
       const hasSimplifiedConfig = options.autoLink || options.packages || options.preset;
       if (!hasSimplifiedConfig && process.env.DEV_LINK !== 'true') {
+        // 如果配置文件存在但没有设置环境变量，给出明确提示（只提示一次）
+        if (linkConfig && !hasSimplifiedConfig && !hasWarnedAboutEnvVar) {
+          log(`⚠️ 检测到配置文件但未设置环境变量。请使用 'DEV_LINK=true npm run dev' 启动，或改用简化配置模式`, 'warn');
+          hasWarnedAboutEnvVar = true;
+        }
         return null;
       }
 
@@ -409,10 +418,24 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
         return null;
       }
 
+      // 🔍 调试日志：记录所有模块解析请求
+      log(`尝试解析模块: ${id} (importer: ${importer || 'none'})`, 'debug');
+
       // 先扫描本地包（如果需要）
       let scannedPackages: { [packageName: string]: string } = {};
       if (linkConfig.autoScan && linkConfig.globalLocalPath) {
         scannedPackages = scanLocalPackages(resolveLocalPath(linkConfig.globalLocalPath));
+      }
+
+      // 🔍 调试日志：显示可用的包映射
+      if (debug) {
+        log(`当前可用的包映射:`, 'debug');
+        for (const mapping of linkConfig.links) {
+          const packageLocalPaths = resolvePackageLocalPath(mapping, scannedPackages);
+          for (const [pkg, path] of Object.entries(packageLocalPaths)) {
+            log(`  - ${pkg} -> ${relative(process.cwd(), path)}`, 'debug');
+          }
+        }
       }
 
       // 查找匹配的链接配置
@@ -420,6 +443,8 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
         const packageLocalPaths = resolvePackageLocalPath(mapping, scannedPackages);
         
         for (const [packageName, localPath] of Object.entries(packageLocalPaths)) {
+          log(`检查包名匹配: "${id}" vs "${packageName}"`, 'debug');
+          
           // 检查是否匹配包名
           if (id === packageName || id.startsWith(`${packageName}/`)) {
             if (id === packageName) {
@@ -512,6 +537,9 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
         }
       }
 
+      // 🔍 调试日志：没有找到匹配的包
+      log(`未找到匹配的包: ${id}`, 'debug');
+
       return null;
     },
 
@@ -593,6 +621,8 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
       localPackagePaths.clear();
       packageToPathMap.clear();
       
+      // 重置标志
+      hasWarnedAboutEnvVar = false;
       server = null;
     }
   };
