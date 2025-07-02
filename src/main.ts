@@ -50,7 +50,7 @@ async function testLocalPackages() {
           <ol>
             <li><strong>正常模式：</strong> <code>npm run dev</code> - 插件不会激活</li>
             <li><strong>开发链接模式：</strong> <code>DEV_LINK=true npm run dev</code> - 使用本地包</li>
-            <li>修改 <code>local-packages/</code> 或 <code>custom-utils/</code> 中的文件观察热更新</li>
+            <li>修改 <code>local-packages/</code> 或 中的文件观察热更新</li>
             <li>查看控制台日志了解哪些包被链接了</li>
           </ol>
         </div>

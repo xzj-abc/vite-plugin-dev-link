@@ -11,6 +11,12 @@ export interface DevLinkConfig {
   enabled?: boolean;
   // 是否显示详细日志
   verbose?: boolean;
+  // 🎯 简化配置：零配置模式 - 自动扫描指定目录
+  autoLink?: string | string[];
+  // 🎯 简化配置：直接指定包映射
+  packages?: Record<string, string>;
+  // 🎯 简化配置：预设模式
+  preset?: 'monorepo' | 'local-dev' | 'component-lib';
 }
 
 export interface LinkMapping {
@@ -60,6 +66,62 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
   };
 
   const loadConfig = (): DevLinkConfigFile | null => {
+    // 🎯 预设模式
+    if (options.preset) {
+      const presets = {
+        'monorepo': {
+          globalLocalPath: '../packages',
+          autoScan: true,
+          links: [{ package: [] }],
+          globalExclude: ['**/*.test.*', '**/*.spec.*', '**/node_modules/**', '**/.git/**']
+        },
+        'local-dev': {
+          globalLocalPath: '../local-packages',
+          autoScan: true,
+          links: [{ package: [] }],
+          globalExclude: ['**/*.test.*', '**/*.spec.*', '**/node_modules/**', '**/.git/**']
+        },
+        'component-lib': {
+          globalLocalPath: '../components',
+          autoScan: true,
+          links: [{ package: [] }],
+          globalExclude: ['**/*.test.*', '**/*.spec.*', '**/*.stories.*', '**/node_modules/**', '**/.git/**']
+        }
+      };
+      configFileDir = process.cwd();
+      log(`🎯 使用预设模式: ${options.preset}`);
+      return presets[options.preset] as DevLinkConfigFile;
+    }
+
+    // 🎯 零配置模式
+    if (options.autoLink) {
+      const autoLinkPaths = Array.isArray(options.autoLink) ? options.autoLink : [options.autoLink];
+      const generatedConfig: DevLinkConfigFile = {
+        globalLocalPath: autoLinkPaths[0],
+        autoScan: true,
+        links: [{ package: [] }], // 空数组，通过自动扫描填充
+        globalExclude: ['**/*.test.*', '**/*.spec.*', '**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**']
+      };
+      configFileDir = process.cwd();
+      log(`🎯 零配置模式，自动扫描: ${autoLinkPaths.join(', ')}`);
+      return generatedConfig;
+    }
+
+    // 🎯 简化配置模式
+    if (options.packages) {
+      const generatedConfig: DevLinkConfigFile = {
+        links: Object.entries(options.packages).map(([packageName, localPath]) => ({
+          package: packageName,
+          localPath: localPath
+        })),
+        globalExclude: ['**/*.test.*', '**/*.spec.*', '**/node_modules/**', '**/.git/**']
+      };
+      configFileDir = process.cwd();
+      log(`🎯 简化配置模式，包映射: ${Object.keys(options.packages).join(', ')}`);
+      return generatedConfig;
+    }
+
+    // 🎯 传统配置文件模式
     // 如果 configFile 是绝对路径，直接使用；否则相对于当前工作目录解析
     const configPath = isAbsolute(configFile) ? configFile : resolve(process.cwd(), configFile);
     
@@ -178,11 +240,15 @@ function vitePluginDevLink(options: DevLinkConfig = {}): Plugin {
     },
 
     buildStart() {
-      // 只在开发模式下启用，并且需要设置 DEV_LINK=true 环境变量
-      if (!enabled || config.command !== 'serve' || process.env.DEV_LINK !== 'true') {
-        if (process.env.DEV_LINK !== 'true' && config.command === 'serve') {
-          log('提示：要启用 dev-link 功能，请设置环境变量 DEV_LINK=true', 'info');
-        }
+      // 只在开发模式下启用
+      if (!enabled || config.command !== 'serve') {
+        return;
+      }
+
+      // 🎯 简化配置模式下不需要环境变量
+      const hasSimplifiedConfig = options.autoLink || options.packages || options.preset;
+      if (!hasSimplifiedConfig && process.env.DEV_LINK !== 'true') {
+        log('提示：传统配置模式需要设置环境变量 DEV_LINK=true，或使用简化配置模式', 'info');
         return;
       }
 

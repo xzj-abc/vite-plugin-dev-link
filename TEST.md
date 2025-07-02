@@ -91,7 +91,6 @@ vite-plugin-dev-link/
 │   └── @test/
 │       ├── ui-components/    # UI组件包
 │       └── icons/            # 图标包
-└── custom-utils/             # 自定义工具包
 ```
 
 ## ⚙️ 配置文件说明
